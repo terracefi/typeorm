@@ -1298,30 +1298,28 @@ export class MysqlQueryRunner extends BaseQueryRunner implements QueryRunner {
 
             dbTables.push(...await this.query(tablesSql));
         } else {
+
             // Avoid data directory scan: TABLE_SCHEMA
             // Avoid database directory scan: TABLE_NAME
             // We only use `TABLE_SCHEMA` and `TABLE_NAME` which is `SKIP_OPEN_TABLE`
-            const tablesSql = tableNames
+            const parsedTableNames = tableNames
                 .filter(tableName => tableName)
                 .map(tableName => {
-                    let { database, tableName: name } = this.driver.parseTableName(tableName);
+                    const { tableName: name } = this.driver.parseTableName(tableName);
+                    return name;
+                });
 
-                    if (!database) {
-                        database = currentDatabase;
-                    }
-
-                    return `
-                        SELECT \`TABLE_SCHEMA\`,
-                               \`TABLE_NAME\`
-                        FROM \`INFORMATION_SCHEMA\`.\`TABLES\`
-                        WHERE \`TABLE_SCHEMA\` = '${database}'
-                          AND \`TABLE_NAME\` = '${name}'
-                    `;
-                }).join(" UNION ");
+            const tablesSql =  `
+                SELECT \`TABLE_SCHEMA\`,
+                       \`TABLE_NAME\`
+                FROM \`INFORMATION_SCHEMA\`.\`TABLES\`
+                WHERE \`TABLE_SCHEMA\` = '${currentDatabase}'
+                  AND \`TABLE_NAME\` IN (${parsedTableNames.map(table => `'${table}'`).join(",")})
+            `;
 
             dbTables.push(...await this.query(tablesSql));
         }
-
+        
 
         // if tables were not found in the db, no need to proceed
         if (!dbTables.length)
@@ -1331,63 +1329,57 @@ export class MysqlQueryRunner extends BaseQueryRunner implements QueryRunner {
         // Avoid data directory scan: TABLE_SCHEMA
         // Avoid database directory scan: TABLE_NAME
         // Full columns: CARDINALITY & INDEX_TYPE - everything else is FRM only
-        const statsSubquerySql = dbTables.map(({ TABLE_SCHEMA, TABLE_NAME }) => {
-            return `
-                SELECT
-                    *
-                FROM \`INFORMATION_SCHEMA\`.\`STATISTICS\`
-                WHERE
-                    \`TABLE_SCHEMA\` = '${TABLE_SCHEMA}'
-                    AND
-                    \`TABLE_NAME\` = '${TABLE_NAME}'
-            `;
-        }).join(" UNION ");
+        const statsSubquerySql = `
+        SELECT
+            *
+        FROM \`INFORMATION_SCHEMA\`.\`STATISTICS\`
+        WHERE
+            \`TABLE_SCHEMA\` = '${dbTables[0].TABLE_SCHEMA}'
+            AND
+            \`TABLE_NAME\` IN (${dbTables.map(t => `'${t.TABLE_NAME}'`)})
+    `;
+
+
 
         // Avoid data directory scan: TABLE_SCHEMA
         // Avoid database directory scan: TABLE_NAME
         // All columns will hit the full table.
-        const kcuSubquerySql =  dbTables.map(({ TABLE_SCHEMA, TABLE_NAME }) => {
-            return `
-                SELECT
-                    *
-                FROM \`INFORMATION_SCHEMA\`.\`KEY_COLUMN_USAGE\` \`kcu\`
-                WHERE
-                    \`kcu\`.\`TABLE_SCHEMA\` = '${TABLE_SCHEMA}'
-                    AND
-                    \`kcu\`.\`TABLE_NAME\` = '${TABLE_NAME}'
-            `;
-        }).join(" UNION ");
+        const kcuSubquerySql =  `
+        SELECT
+            *
+        FROM \`INFORMATION_SCHEMA\`.\`KEY_COLUMN_USAGE\` \`kcu\`
+        WHERE
+            \`TABLE_SCHEMA\` = '${dbTables[0].TABLE_SCHEMA}'
+            AND
+            \`TABLE_NAME\` IN (${dbTables.map(t => `'${t.TABLE_NAME}'`)})
+    `;
 
         // Avoid data directory scan: CONSTRAINT_SCHEMA
         // Avoid database directory scan: TABLE_NAME
         // All columns will hit the full table.
-        const rcSubquerySql = dbTables.map(({ TABLE_SCHEMA, TABLE_NAME }) => {
-            return `
-                SELECT
-                    *
-                FROM \`INFORMATION_SCHEMA\`.\`REFERENTIAL_CONSTRAINTS\`
-                WHERE
-                    \`CONSTRAINT_SCHEMA\` = '${TABLE_SCHEMA}'
-                    AND
-                    \`TABLE_NAME\` = '${TABLE_NAME}'
-            `;
-        }).join(" UNION ");
+        const rcSubquerySql =  `
+        SELECT
+            *
+        FROM \`INFORMATION_SCHEMA\`.\`REFERENTIAL_CONSTRAINTS\`
+        WHERE
+            \`CONSTRAINT_SCHEMA\` = '${dbTables[0].TABLE_SCHEMA}'
+            AND
+            \`TABLE_NAME\` IN (${dbTables.map(t => `'${t.TABLE_NAME}'`)})
+    `;
 
         // Avoid data directory scan: TABLE_SCHEMA
         // Avoid database directory scan: TABLE_NAME
         // OPEN_FRM_ONLY applies to all columns
-        const columnsSql = dbTables.map(({ TABLE_SCHEMA, TABLE_NAME }) => {
-            return `
-                SELECT
-                    *
-                FROM
-                    \`INFORMATION_SCHEMA\`.\`COLUMNS\`
-                WHERE
-                    \`TABLE_SCHEMA\` = '${TABLE_SCHEMA}'
-                    AND
-                    \`TABLE_NAME\` = '${TABLE_NAME}'
-                `;
-        }).join(" UNION ");
+        const columnsSql =  `
+        SELECT
+            *
+        FROM
+            \`INFORMATION_SCHEMA\`.\`COLUMNS\`
+        WHERE
+            \`TABLE_SCHEMA\` = '${dbTables[0].TABLE_SCHEMA}'
+            AND
+            \`TABLE_NAME\` IN (${dbTables.map(t => `'${t.TABLE_NAME}'`)})
+    `;
 
         // No Optimizations are available for COLLATIONS
         const collationsSql = `
